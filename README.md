@@ -39,22 +39,6 @@ GPUGemsVolumeRendering/
 └── CMakeLists.txt
 ```
 
-Design notes:
-
-- **Modern Vulkan.** Uses Vulkan-Hpp **RAII** wrappers, **dynamic rendering**
-  (no render passes/framebuffers) and **synchronization2**. Memory is managed by
-  the **Vulkan Memory Allocator**.
-- **SOLID.** `Context` owns device lifetime only; `Renderer` owns the frame
-  loop; `GraphicsPipelineBuilder` isolates pipeline boilerplate; the `volume`
-  module contains the chapter's algorithms with no Vulkan dependency in the data
-  types. Apps subclass `vve::core::Application` and override `on*` hooks
-  (`onInit`, `onUpdate`, `onRecordOffscreen`, `onRender`, `onImGui`) — the loop
-  and swapchain recreation are inherited (template method / open-closed).
-- **Reusable components.** View-aligned slicing, gradient computation, transfer
-  functions and per-frame slice streaming are engine components shared by every
-  app; the same `SliceProxyGeometry` serves both view-aligned and half-angle
-  slicing.
-
 ## Requirements
 
 - **Vulkan SDK 1.3+** (provides headers, the loader, validation layers and
@@ -94,29 +78,7 @@ IDE, or command line):
 Validation layers are enabled by default in the app configs; disable them by
 setting `Config::enableValidation = false`.
 
-## Real datasets
-
-The apps ship with synthetic datasets (`sphere`, `marschnerLobb`, `blobs`,
-`tangle`) but also visualise **real scan data** — the CT/MRI volumes the chapter
-is about. Fetch some with the included scripts:
-
-```powershell
-# Windows
-powershell -ExecutionPolicy Bypass -File data/download_datasets.ps1 -All
-```
-```sh
-# macOS / Linux
-data/download_datasets.sh --all
-```
-
-These pull classic volumes (bonsai, engine, foot, …) from
-[Pavol Klacansky's Open SciVis Datasets](https://klacansky.com/open-scivis-datasets/)
-into `data/`. Any raw file named `<name>_<W>x<H>x<D>_<uint8|uint16>.raw` dropped
-in `data/` is discovered automatically, added to each app's **Dataset**
-dropdown, and selected by default. 16-bit volumes are normalised by their peak
-value; volumes above 256³ are subsampled on load. See [data/README.md](data/README.md).
-
-From code, `vve::volume::VolumeData::loadRaw(path, nx, ny, nz, bytesPerVoxel)`
+`vve::volume::VolumeData::loadRaw(path, nx, ny, nz, bytesPerVoxel)`
 loads any raw volume directly.
 
 ## Notes & limitations
