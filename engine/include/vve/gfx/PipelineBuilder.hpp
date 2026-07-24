@@ -44,6 +44,8 @@ public:
     // Multiplicative: Cd' = Cd * Cs. Per-channel light attenuation for the
     // translucency light buffer (§39.5.1).
     static vk::PipelineColorBlendAttachmentState blendMultiply();
+    // Maximum: Cd' = max(Cs, Cd). Order-independent, used for MIP rendering.
+    static vk::PipelineColorBlendAttachmentState blendMax();
 
 private:
     vk::PipelineShaderStageCreateInfo m_vert{};

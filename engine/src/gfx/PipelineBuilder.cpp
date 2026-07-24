@@ -99,6 +99,18 @@ vk::PipelineColorBlendAttachmentState GraphicsPipelineBuilder::blendUnder() {
     return b;
 }
 
+vk::PipelineColorBlendAttachmentState GraphicsPipelineBuilder::blendMax() {
+    vk::PipelineColorBlendAttachmentState b = blendNone();
+    b.blendEnable = VK_TRUE;
+    b.srcColorBlendFactor = vk::BlendFactor::eOne;
+    b.dstColorBlendFactor = vk::BlendFactor::eOne;
+    b.colorBlendOp = vk::BlendOp::eMax;
+    b.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+    b.dstAlphaBlendFactor = vk::BlendFactor::eOne;
+    b.alphaBlendOp = vk::BlendOp::eMax;
+    return b;
+}
+
 vk::PipelineColorBlendAttachmentState GraphicsPipelineBuilder::blendMultiply() {
     vk::PipelineColorBlendAttachmentState b = blendNone();
     b.blendEnable = VK_TRUE;

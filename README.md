@@ -16,6 +16,7 @@ SOLID responsibilities) and pulls its dependencies with CMake `FetchContent`.
 | `04_volumetric_shadows` | §39.5.1    | **Half-angle slicing** two-pass light/eye buffers (Algorithm 39-3), volumetric shadows |
 | `05_translucency`       | §39.5.1    | Per-channel light **absorption** + **blur propagation** (Eq. 9) for forward-scattered translucency |
 | `06_procedural`         | §39.5.2    | **Noise-volume perturbation** — coordinate warping (Fig. 39-14) and optical-property modulation, animated |
+| `07_volume_viewer`      | —          | **Versatile volume viewer** — DVR + MIP modes, radiology window/level, density clip, per-dataset presets and a live labelled transfer-function editor |
 
 All six apps share an orbit camera (left-drag to rotate, scroll to zoom) and a
 Dear ImGui control panel.
@@ -35,6 +36,7 @@ GPUGemsVolumeRendering/
 │   │               SliceProxyGeometry, SliceGeometryBuffers
 ├── apps/                       # one executable per chapter topic
 │   ├── 01_basic_emissive/ … 06_procedural/   (main.cpp + shaders/)
+│   └── 07_volume_viewer/                      (versatile DVR/MIP viewer)
 ├── cmake/                      # Dependencies.cmake, CompileShaders.cmake
 └── CMakeLists.txt
 ```
@@ -92,6 +94,8 @@ every app's dataset combo automatically):
 | `bonsai_256x256x256_uint8.raw` | CT bonsai, via [lquatrin/volume_rendering_data](https://github.com/lquatrin/volume_rendering_data) (originally the [Open SciVis](https://klacansky.com/open-scivis-datasets/) *bonsai*) | App 04 flips it upright and classifies green foliage / brown trunk |
 | `CThead_256x256x113_uint16.raw` | UNC CT head, via [joshcodd/volume-rendering](https://github.com/joshcodd/volume-rendering) | Byte-swapped to little-endian and window/level-adjusted so air maps to 0; classified as translucent skin over a grey skull |
 | `Carp_256x256x512_uint16.raw` | CT carp, from Stefan Roettger's [volume library](http://volume.open-terrain.org/) (`Carp.pvm`) | Decoded from the DDS-compressed PVM and byte-swapped to little-endian; App 05 renders it broadside as translucent red flesh over a skeleton |
+| `Lobster_301x324x56_uint8.raw` | CT lobster, from the same [volume library](http://volume.open-terrain.org/) (`Lobster.pvm`) | Decoded from the DDS-compressed PVM; the default showcase for App 07's versatile viewer |
+| `Subclavia_512x512x96_uint8.raw` | CT angiography (subclavian artery), same [library](http://volume.open-terrain.org/) (`Subclavia.pvm`) | Decoded from the DDS-compressed PVM; App 07's angio preset shows heart, aorta and pulmonary vessels |
 
 App 04 auto-picks a matching transfer function per dataset (bonsai → foliage,
 CThead → skin+bone) and defaults to the bonsai; use the **Transfer fn** combo to
