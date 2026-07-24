@@ -81,11 +81,32 @@ setting `Config::enableValidation = false`.
 `vve::volume::VolumeData::loadRaw(path, nx, ny, nz, bytesPerVoxel)`
 loads any raw volume directly.
 
+## Datasets
+
+`data/` ships two real CT scans so App 04 reproduces GPU Gems Fig. 39-1 out of
+the box (drop any other `*_WxHxD_uint8|uint16.raw` file in here and it appears in
+every app's dataset combo automatically):
+
+| File | Source | Notes |
+|------|--------|-------|
+| `bonsai_256x256x256_uint8.raw` | CT bonsai, via [lquatrin/volume_rendering_data](https://github.com/lquatrin/volume_rendering_data) (originally the [Open SciVis](https://klacansky.com/open-scivis-datasets/) *bonsai*) | App 04 flips it upright and classifies green foliage / brown trunk |
+| `CThead_256x256x113_uint16.raw` | UNC CT head, via [joshcodd/volume-rendering](https://github.com/joshcodd/volume-rendering) | Byte-swapped to little-endian and window/level-adjusted so air maps to 0; classified as translucent skin over a grey skull |
+
+App 04 auto-picks a matching transfer function per dataset (bonsai → foliage,
+CThead → skin+bone) and defaults to the bonsai; use the **Transfer fn** combo to
+override.
+
 ## Notes & limitations
 
-- Apps 04 and 05 implement the `dot(view, light) >= 0` branch of Algorithm 39-3;
-  a runtime **"flip slice order"** toggle accommodates the opposite arrangement.
-  They push two `mat4`s per draw and expect `maxPushConstantsSize ≥ 144`
-  (true on all modern desktop GPUs).
+- Apps 04 and 05 implement the `dot(view, light) >= 0` branch of Algorithm 39-3.
+  Because the half-vector always lies between the eye and light directions, the
+  slices are traversed front-to-back from the light in every configuration, so
+  the order is fixed (no user-facing "flip slice order" toggle).
+  Their eye pass pushes two `mat4`s plus a little scalar data (144 bytes), so
+  they need `maxPushConstantsSize ≥ 144`. Vulkan only
+  *guarantees* 128 bytes, but every
+  modern desktop GPU (NVIDIA, AMD, Intel) advertises **256**, so this is a
+  non-issue in practice; it would only bite a minimal-limit mobile/embedded
+  driver.
 - App 05's translucency is the chapter's model in spirit (per-channel absorption
   + light-buffer blur) rather than a full two-buffer scattering simulation.

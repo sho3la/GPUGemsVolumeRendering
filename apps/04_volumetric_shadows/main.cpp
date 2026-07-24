@@ -12,9 +12,10 @@
 //                   it into an offscreen eye buffer.
 // The eye buffer is finally composited to the screen.
 //
-// Note: this implements the dot(view, light) >= 0 branch of Algorithm 39-3 with
-// a runtime "flip slice order" toggle to accommodate the opposite arrangement.
-// Requires maxPushConstantsSize >= 132 (true on all modern desktop GPUs).
+// Note: this implements the dot(view, light) >= 0 branch of Algorithm 39-3.
+// Slices are always traversed front-to-back from the light (the only order the
+// two-pass scheme needs), so there is no user-facing slice-order toggle.
+// Requires maxPushConstantsSize >= 144 (true on all modern desktop GPUs).
 // -----------------------------------------------------------------------------
 #include "vve/core/Application.hpp"
 #include "vve/core/Log.hpp"
@@ -36,6 +37,7 @@
 #include <array>
 #include <cmath>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -47,11 +49,16 @@ namespace {
 struct LightPC {
     glm::mat4 lightMVP;
     float opacityCorrection;
+    float densityMin;
+    float densityMax;
 };
 struct EyePC {
     glm::mat4 eyeMVP;
     glm::mat4 lightMVP;
     float opacityCorrection;
+    float ambient;
+    float densityMin;
+    float densityMax;
 };
 constexpr vk::Format kHDR = vk::Format::eR16G16B16A16Sfloat;
 constexpr uint32_t kLightSize = 512;
@@ -72,6 +79,9 @@ private:
     }
 
     void onInit() override {
+        // GPU Gems Fig. 39-1 shows the volumes over a white backdrop.
+        clearColor = {1.0f, 1.0f, 1.0f, 1.0f};
+
         m_arcball.attach(window());
         m_arcball.setDistance(2.4f);
 
@@ -81,13 +91,48 @@ private:
         m_source.scanDirectory(core::dataDir());
         for (const auto& s : m_source.labels()) m_datasetNames.push_back(s.c_str());
         if (int r = m_source.firstRealIndex(); r >= 0) m_datasetIndex = r;
+        // Default to the CT bonsai (the scanned tree from Fig. 39-1) if present.
+        for (int i = 0; i < static_cast<int>(m_datasetNames.size()); ++i) {
+            if (std::string(m_datasetNames[i]).find("bonsai") != std::string::npos) {
+                m_datasetIndex = i;
+                break;
+            }
+        }
 
         createLightBuffer();
         createEyeBuffer(swapchain().extent());
         createDescriptors();
-        uploadTransferFunction(volume::TransferFunction::fire());
+        applyTransferFunction();
         buildVolume(m_datasetIndex);
         createPipelines();
+    }
+
+    // Picks a transfer function that classifies the current dataset the way the
+    // chapter figure does. "Auto" keys off the dataset name; the other presets
+    // let the viewer override it explicitly.
+    volume::TransferFunction tfForPreset(int preset, int datasetIndex) const {
+        auto named = [&](const char* s) {
+            return datasetIndex >= 0 &&
+                   datasetIndex < static_cast<int>(m_datasetNames.size()) &&
+                   std::string(m_datasetNames[datasetIndex]).find(s) !=
+                       std::string::npos;
+        };
+        switch (preset) {
+            case kTFBonsai: return volume::TransferFunction::bonsai();
+            case kTFSkull: return volume::TransferFunction::ctSkull();
+            case kTFFire: return volume::TransferFunction::fire();
+            case kTFGray: return volume::TransferFunction::grayscaleRamp();
+            case kTFAuto:
+            default:
+                if (named("bonsai")) return volume::TransferFunction::bonsai();
+                if (named("CThead") || named("skull") || named("head"))
+                    return volume::TransferFunction::ctSkull();
+                return volume::TransferFunction::fire();
+        }
+    }
+
+    void applyTransferFunction() {
+        uploadTransferFunction(tfForPreset(m_tfPreset, m_datasetIndex));
     }
 
     void onResize(uint32_t, uint32_t) override {
@@ -191,6 +236,19 @@ private:
         writeSampler(*m_eyeSet, 1, m_tfTex.view(), m_tfTex.sampler());
     }
 
+    // Mirrors an R8 volume along Y (rows), leaving X and Z untouched.
+    static std::vector<uint8_t> flipY(std::vector<uint8_t> src, int nx, int ny,
+                                      int nz) {
+        std::vector<uint8_t> dst(src.size());
+        const size_t slice = static_cast<size_t>(nx) * ny;
+        for (int z = 0; z < nz; ++z)
+            for (int y = 0; y < ny; ++y) {
+                const uint8_t* s = &src[z * slice + static_cast<size_t>(ny - 1 - y) * nx];
+                std::copy(s, s + nx, &dst[z * slice + static_cast<size_t>(y) * nx]);
+            }
+        return dst;
+    }
+
     void buildVolume(int index) {
         ctx().waitIdle();
         volume::VolumeData vol = m_source.create(index, 128);
@@ -203,7 +261,10 @@ private:
         desc.format = vk::Format::eR8Unorm;
         desc.type = vk::ImageType::e3D;
         m_volumeTex = gfx::Texture(ctx(), desc);
-        auto bytes = vol.toR8();
+        // These raw scans store rows top-to-bottom, so a naive upload renders the
+        // volume upside down (the bonsai's pot ends up on top). Flip in Y so the
+        // datasets stand upright, matching GPU Gems Fig. 39-1.
+        auto bytes = flipY(vol.toR8(), vol.nx(), vol.ny(), vol.nz());
         m_volumeTex.uploadFromData(ctx(), bytes.data(), bytes.size());
 
         writeSampler(*m_volSet, 0, m_volumeTex.view(), m_volumeTex.sampler());
@@ -310,8 +371,13 @@ private:
         glm::vec3 toLight = -lightTravel;
         glm::vec3 halfVec = glm::normalize(toEye + toLight);
 
+        // The half-vector lies between the eye and light directions, so the
+        // light always sits on the +halfVec side; iterating slices from that end
+        // (reverse=true) processes them front-to-back from the light, which is
+        // what the two-pass algorithm needs. There is no configuration a modern
+        // GPU renders where the opposite order is wanted, so it is fixed on.
         auto mesh = volume::SliceProxyGeometry::generateSliced(
-            -m_boxHalf, m_boxHalf, halfVec, m_numSlices, m_flipOrder);
+            -m_boxHalf, m_boxHalf, halfVec, m_numSlices, /*reverse=*/true);
         m_lastSliceCount = static_cast<int>(mesh.sliceCount());
         if (mesh.vertices.empty()) return;
         m_sliceBuffers->upload(frame.frameIndex, mesh.vertices);
@@ -355,8 +421,9 @@ private:
                                  vk::AccessFlagBits2::eColorAttachmentWrite,
                                  vk::AccessFlagBits2::eShaderRead);
 
-        LightPC lpc{lightMVP, opacityCorrection};
-        EyePC epc{eyeMVP, lightMVP, opacityCorrection};
+        LightPC lpc{lightMVP, opacityCorrection, m_densityMin, m_densityMax};
+        EyePC epc{eyeMVP,     lightMVP, opacityCorrection,
+                  m_ambient,  m_densityMin, m_densityMax};
         vk::DeviceSize zero = 0;
 
         for (int i = 0; i < m_lastSliceCount; ++i) {
@@ -422,14 +489,26 @@ private:
     void onImGui() override {
         ImGui::Begin("Volumetric Shadows");
         if (ImGui::Combo("Dataset", &m_datasetIndex, m_datasetNames.data(),
-                         static_cast<int>(m_datasetNames.size())))
+                         static_cast<int>(m_datasetNames.size()))) {
             buildVolume(m_datasetIndex);
-        ImGui::SliderInt("Slices", &m_numSlices, 16, 256);
+            applyTransferFunction(); // re-classify (matters when preset is Auto)
+        }
+        static const char* kPresetNames[] = {"Auto", "Bonsai", "CT skull",
+                                             "Fire", "Grayscale"};
+        if (ImGui::Combo("Transfer fn", &m_tfPreset, kPresetNames,
+                         IM_ARRAYSIZE(kPresetNames)))
+            applyTransferFunction();
+        ImGui::SliderInt("Slices", &m_numSlices, 16, 1024);
+        // Density window: only voxels whose density falls in [min,max] render.
+        // Raise min to drop the semi-transparent skin/foliage and keep only the
+        // dense core (e.g. bone); lower max to peel off the densest structures.
+        ImGui::DragFloatRange2("Density range", &m_densityMin, &m_densityMax,
+                               0.005f, 0.0f, 1.0f, "min %.2f", "max %.2f");
         ImGui::SeparatorText("Light");
         ImGui::SliderFloat("Azimuth", &m_lightAzimuth, -3.14159f, 3.14159f);
         ImGui::SliderFloat("Elevation", &m_lightElevation, -1.5f, 1.5f);
         ImGui::ColorEdit3("Light color", &m_lightColor.x);
-        ImGui::Checkbox("Flip slice order", &m_flipOrder);
+        ImGui::SliderFloat("Ambient", &m_ambient, 0.0f, 1.0f);
         ImGui::Text("Slices drawn: %d", m_lastSliceCount);
         ImGui::Text("%.1f FPS", ImGui::GetIO().Framerate);
         ImGui::End();
@@ -468,14 +547,19 @@ private:
     vk::raii::DescriptorSet m_eyeSet{nullptr};
     vk::raii::DescriptorSet m_compSet{nullptr};
 
+    enum TFPreset { kTFAuto = 0, kTFBonsai, kTFSkull, kTFFire, kTFGray };
+
     glm::vec3 m_boxHalf{0.5f};
     int m_datasetIndex = 0;
+    int m_tfPreset = kTFAuto;
     int m_numSlices = 128;
     int m_lastSliceCount = 0;
+    float m_densityMin = 0.0f;
+    float m_densityMax = 1.0f;
     float m_lightAzimuth = 1.0f;
     float m_lightElevation = 0.7f;
     glm::vec3 m_lightColor{1.0f, 0.95f, 0.85f};
-    bool m_flipOrder = false;
+    float m_ambient = 0.45f;
 };
 
 int main() {

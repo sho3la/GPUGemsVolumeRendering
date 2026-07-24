@@ -38,9 +38,10 @@ namespace {
 struct PushConstants {
     glm::mat4 mvp;
     glm::vec4 texelSize;
-    glm::vec4 lightDir; // xyz dir, w = ambient
-    glm::vec4 viewDir;  // xyz dir, w = shininess
-    glm::vec4 params;   // x=kd, y=ks, z=shadeStrength, w=opacityCorrection
+    glm::vec4 lightDir;     // xyz dir, w = ambient
+    glm::vec4 viewDir;      // xyz dir, w = shininess
+    glm::vec4 params;       // x=kd, y=ks, z=shadeStrength, w=opacityCorrection
+    glm::vec4 densityRange; // x=min, y=max (density window)
 };
 constexpr int kReferenceSlices = 256;
 constexpr size_t kMaxSliceVerts = 768 * 18;
@@ -171,6 +172,11 @@ private:
                          static_cast<int>(m_datasetNames.size())))
             buildVolume(m_datasetIndex);
         ImGui::SliderInt("Slices", &m_numSlices, 16, 768);
+        // Density window: only voxels whose density falls in [min,max] render.
+        // Raise min to drop soft tissue/skin and keep only the dense, lit core
+        // (e.g. bone); lower max to peel off the densest structures.
+        ImGui::DragFloatRange2("Density range", &m_densityMin, &m_densityMax,
+                               0.005f, 0.0f, 1.0f, "min %.2f", "max %.2f");
         ImGui::SeparatorText("Light");
         ImGui::SliderFloat("Azimuth", &m_lightAzimuth, -3.14159f, 3.14159f);
         ImGui::SliderFloat("Elevation", &m_lightElevation, -1.5f, 1.5f);
@@ -201,6 +207,7 @@ private:
         PushConstants pc{};
         pc.mvp = m_camera.projection(aspect) * m_camera.view();
         pc.texelSize = glm::vec4(m_texelSize, 0.0f);
+        pc.densityRange = glm::vec4(m_densityMin, m_densityMax, 0.0f, 0.0f);
         pc.lightDir = glm::vec4(glm::normalize(lightDir), m_ambient);
         pc.viewDir = glm::vec4(viewDir, m_shininess);
         pc.params = glm::vec4(
@@ -237,6 +244,8 @@ private:
     glm::vec3 m_texelSize{1.0f / 128};
     int m_datasetIndex = 0;
     int m_numSlices = 256;
+    float m_densityMin = 0.0f;
+    float m_densityMax = 1.0f;
     float m_lightAzimuth = 0.8f;
     float m_lightElevation = 0.6f;
     float m_ambient = 0.25f;

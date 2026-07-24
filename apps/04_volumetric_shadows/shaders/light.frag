@@ -15,11 +15,21 @@ layout(set = 0, binding = 1) uniform sampler1D uTransfer;
 layout(push_constant) uniform PushConstants {
     mat4 lightMVP;
     float opacityCorrection;
+    float densityMin;       // density window [min,max]; keeps light in sync
+    float densityMax;
 } pc;
+
+// 1 inside [min,max], fading to 0 just outside; never cuts the top at max>=1.
+float densityGate(float value, float lo, float hi) {
+    return smoothstep(lo, lo + 0.02, value) * (1.0 - smoothstep(hi, hi + 0.02, value));
+}
 
 void main() {
     float value = texture(uVolume, vUVW).r;
     float alpha = texture(uTransfer, value).a;
+    // Keep only material inside the density window so removed skin/foliage no
+    // longer blocks light; the isolated core then lights and shadows correctly.
+    alpha *= densityGate(value, pc.densityMin, pc.densityMax);
     alpha = 1.0 - pow(max(1.0 - alpha, 0.0), pc.opacityCorrection);
     outColor = vec4(0.0, 0.0, 0.0, alpha); // color 0 => "over" attenuates target
 }

@@ -35,6 +35,8 @@ public:
     static TransferFunction grayscaleRamp();
     static TransferFunction fire();      // black-red-yellow-white emission
     static TransferFunction coolWarm();  // diverging scientific colormap
+    static TransferFunction bonsai();    // CT bonsai: green foliage, brown trunk
+    static TransferFunction ctSkull();   // CT head: translucent skin + grey bone
 
 private:
     std::vector<Stop> m_stops;

@@ -18,7 +18,13 @@ layout(push_constant) uniform PushConstants {
     vec4 lightDir;
     vec4 viewDir;
     vec4 params;
+    vec4 densityRange; // x=min, y=max
 } pc;
+
+// 1 inside [min,max], fading to 0 just outside; never cuts the top at max>=1.
+float densityGate(float value, float lo, float hi) {
+    return smoothstep(lo, lo + 0.02, value) * (1.0 - smoothstep(hi, hi + 0.02, value));
+}
 
 vec3 gradientCentralDiff(vec3 uvw) {
     vec3 ts = pc.texelSize.xyz;
@@ -58,5 +64,7 @@ void main() {
     vec3 color = mix(tf.rgb, litColor, surfaceness);
 
     float a = 1.0 - pow(max(1.0 - tf.a, 0.0), pc.params.w);
+    // Density window: keep only material inside [min,max].
+    a *= densityGate(value, pc.densityRange.x, pc.densityRange.y);
     outColor = vec4(color * a, a);
 }

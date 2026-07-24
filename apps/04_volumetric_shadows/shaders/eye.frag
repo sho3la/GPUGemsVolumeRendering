@@ -16,7 +16,15 @@ layout(push_constant) uniform PushConstants {
     mat4 eyeMVP;
     mat4 lightMVP;
     float opacityCorrection;
+    float ambient;          // indirect-light floor so shadows aren't pitch black
+    float densityMin;       // density window [min,max] (peels skin/foliage)
+    float densityMax;
 } pc;
+
+// 1 inside [min,max], fading to 0 just outside; never cuts the top at max>=1.
+float densityGate(float value, float lo, float hi) {
+    return smoothstep(lo, lo + 0.02, value) * (1.0 - smoothstep(hi, hi + 0.02, value));
+}
 
 void main() {
     float value = texture(uVolume, vUVW).r;
@@ -27,7 +35,11 @@ void main() {
     vec2 luv = ndc.xy * 0.5 + 0.5;
     vec3 light = texture(uLightBuffer, luv).rgb;
 
+    // Direct light from the light buffer plus a constant ambient term. Without
+    // ambient, fully self-shadowed interiors collapse to black; the chapter's
+    // figure keeps a soft, coloured shadow instead.
     float a = 1.0 - pow(max(1.0 - tf.a, 0.0), pc.opacityCorrection);
-    vec3 color = tf.rgb * light; // shadowed color
-    outColor = vec4(color * a, a); // premultiplied
+    a *= densityGate(value, pc.densityMin, pc.densityMax); // density window
+    vec3 color = tf.rgb * (light + pc.ambient); // shadowed color
+    outColor = vec4(color * a, a);              // premultiplied
 }

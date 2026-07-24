@@ -10,7 +10,9 @@
 //     kernel (radius r = d*tan(phi), Equation 9), approximating the lateral
 //     spread of forward-scattered light and softening the shadows.
 //
-// Implements the dot(view, light) >= 0 branch with a "flip slice order" toggle.
+// Implements the dot(view, light) >= 0 branch. Slices are always traversed
+// front-to-back from the light (the only order the two-pass scheme needs), so
+// there is no user-facing slice-order toggle.
 // Requires maxPushConstantsSize >= 144 (true on all modern desktop GPUs).
 // -----------------------------------------------------------------------------
 #include "vve/core/Application.hpp"
@@ -287,8 +289,11 @@ private:
         glm::vec3 toLight = -lightTravel;
         glm::vec3 halfVec = glm::normalize(toEye + toLight);
 
+        // Slices are always iterated front-to-back from the light (the +halfVec
+        // end): the half-vector lies between the eye and light, so that is the
+        // only order the two-pass scheme needs. See App 04 for the full rationale.
         auto mesh = volume::SliceProxyGeometry::generateSliced(
-            -m_boxHalf, m_boxHalf, halfVec, m_numSlices, m_flipOrder);
+            -m_boxHalf, m_boxHalf, halfVec, m_numSlices, /*reverse=*/true);
         m_lastSliceCount = static_cast<int>(mesh.sliceCount());
         if (mesh.vertices.empty()) return;
         m_sliceBuffers->upload(frame.frameIndex, mesh.vertices);
@@ -404,7 +409,6 @@ private:
         ImGui::ColorEdit3("Absorption (per channel)", &m_absorption.x);
         ImGui::SliderFloat("Blur radius (phi)", &m_blurRadius, 0.0f, 0.02f,
                            "%.4f");
-        ImGui::Checkbox("Flip slice order", &m_flipOrder);
         ImGui::Text("Slices drawn: %d", m_lastSliceCount);
         ImGui::Text("%.1f FPS", ImGui::GetIO().Framerate);
         ImGui::End();
@@ -452,7 +456,6 @@ private:
     glm::vec3 m_lightColor{1.0f, 0.98f, 0.92f};
     glm::vec3 m_absorption{0.4f, 0.7f, 0.9f}; // red penetrates deepest
     float m_blurRadius = 0.004f;
-    bool m_flipOrder = false;
 };
 
 int main() {
