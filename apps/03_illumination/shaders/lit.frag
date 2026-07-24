@@ -18,13 +18,8 @@ layout(push_constant) uniform PushConstants {
     vec4 lightDir;
     vec4 viewDir;
     vec4 params;
-    vec4 densityRange; // x=min, y=max
+    vec4 window; // x=window low, y=window high (radiology WL/WW)
 } pc;
-
-// 1 inside [min,max], fading to 0 just outside; never cuts the top at max>=1.
-float densityGate(float value, float lo, float hi) {
-    return smoothstep(lo, lo + 0.02, value) * (1.0 - smoothstep(hi, hi + 0.02, value));
-}
 
 vec3 gradientCentralDiff(vec3 uvw) {
     vec3 ts = pc.texelSize.xyz;
@@ -39,7 +34,12 @@ vec3 gradientCentralDiff(vec3 uvw) {
 
 void main() {
     float value = texture(uVolume, vUVW).r;
-    vec4 tf = texture(uTransfer, value);
+    // Radiology windowing: remap [low,high] onto the transfer-function domain
+    // before classification, so WL/WW controls contrast the way a CT console
+    // does. The gradient below still uses the raw field for stable normals.
+    float lo = pc.window.x, hi = pc.window.y;
+    float windowed = clamp((value - lo) / max(hi - lo, 1e-4), 0.0, 1.0);
+    vec4 tf = texture(uTransfer, windowed);
 
     vec3 grad = gradientCentralDiff(vUVW);
     float gradMag = length(grad);
@@ -64,7 +64,5 @@ void main() {
     vec3 color = mix(tf.rgb, litColor, surfaceness);
 
     float a = 1.0 - pow(max(1.0 - tf.a, 0.0), pc.params.w);
-    // Density window: keep only material inside [min,max].
-    a *= densityGate(value, pc.densityRange.x, pc.densityRange.y);
     outColor = vec4(color * a, a);
 }

@@ -26,7 +26,9 @@
 
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -41,7 +43,29 @@ struct PushConstants {
     glm::vec4 lightDir;     // xyz dir, w = ambient
     glm::vec4 viewDir;      // xyz dir, w = shininess
     glm::vec4 params;       // x=kd, y=ks, z=shadeStrength, w=opacityCorrection
-    glm::vec4 densityRange; // x=min, y=max (density window)
+    glm::vec4 window;       // x=window low, y=window high (radiology WL/WW remap)
+};
+
+// One transfer-function control point plus a tissue label for the editor.
+struct EditStop {
+    std::string label;
+    volume::TransferFunction::Stop s;
+};
+
+// Radiology-style volume-rendering presets (generic CT, defined over the
+// scan's normalised value with air near 0). Each carries a default window.
+struct VRPreset {
+    const char* name;
+    float level, width; // default window level / width
+};
+// The stops below are authored directly in the scan's normalised value, so each
+// preset's default window is the identity [0,1] (level 0.5, width 1.0); WL/WW
+// then acts as a live contrast tweak on top, like a CT console.
+constexpr VRPreset kPresets[] = {
+    {"CT Bone", 0.5f, 1.0f},
+    {"CT Soft Tissue", 0.5f, 1.0f},
+    {"CT Skin (surface)", 0.5f, 1.0f},
+    {"CT Angio (vessels)", 0.5f, 1.0f},
 };
 constexpr int kReferenceSlices = 256;
 constexpr size_t kMaxSliceVerts = 768 * 18;
@@ -68,11 +92,80 @@ private:
         m_source.scanDirectory(core::dataDir());
         for (const auto& s : m_source.labels()) m_datasetNames.push_back(s.c_str());
         if (int r = m_source.firstRealIndex(); r >= 0) m_datasetIndex = r;
+        // Default to the VisMale CT body for the radiology-style presets.
+        for (int i = 0; i < static_cast<int>(m_datasetNames.size()); ++i) {
+            if (std::string(m_datasetNames[i]).find("VisMale") != std::string::npos) {
+                m_datasetIndex = i;
+                break;
+            }
+        }
 
         createDescriptors();
-        uploadTransferFunction(volume::TransferFunction::coolWarm());
+        applyPreset(m_preset);
         buildVolume(m_datasetIndex);
         createPipeline();
+    }
+
+    // Radiology CT VR presets: named tissue bands classified over the scan's
+    // normalised value (air ~0). Loading a preset also sets its default window.
+    void applyPreset(int preset) {
+        m_preset = preset;
+        m_winLevel = kPresets[preset].level;
+        m_winWidth = kPresets[preset].width;
+        m_stops.clear();
+        switch (preset) {
+            case 1: { // Soft tissue (+ bone)
+                m_stops = {
+                    {"Air",         {0.00f, glm::vec3(0.0f), 0.00f}},
+                    {"Skin",        {0.10f, glm::vec3(0.85f, 0.62f, 0.50f), 0.02f}},
+                    {"Fat",         {0.20f, glm::vec3(0.90f, 0.75f, 0.55f), 0.08f}},
+                    {"Muscle",      {0.30f, glm::vec3(0.80f, 0.35f, 0.32f), 0.18f}},
+                    {"Bone",        {0.43f, glm::vec3(0.95f, 0.92f, 0.86f), 0.60f}},
+                    {"Dense bone",  {1.00f, glm::vec3(1.0f, 0.98f, 0.95f), 0.85f}},
+                };
+                break;
+            }
+            case 2: { // Skin / surface
+                const glm::vec3 skin(0.88f, 0.68f, 0.56f);
+                m_stops = {
+                    {"Air",         {0.00f, glm::vec3(0.0f), 0.00f}},
+                    {"Skin onset",  {0.09f, skin, 0.00f}},
+                    {"Skin",        {0.13f, skin, 0.85f}},
+                    {"Interior",    {0.50f, skin * 0.9f, 0.90f}},
+                    {"Deep",        {1.00f, skin * 0.8f, 0.95f}},
+                };
+                break;
+            }
+            case 3: { // Angio / vessels
+                m_stops = {
+                    {"Air",         {0.00f, glm::vec3(0.0f), 0.00f}},
+                    {"Soft tissue", {0.28f, glm::vec3(0.45f, 0.06f, 0.05f), 0.04f}},
+                    {"Vessels",     {0.42f, glm::vec3(0.95f, 0.25f, 0.18f), 0.45f}},
+                    {"Bone",        {0.62f, glm::vec3(1.0f, 0.95f, 0.90f), 0.80f}},
+                    {"Dense bone",  {1.00f, glm::vec3(1.0f, 0.98f, 0.95f), 0.90f}},
+                };
+                break;
+            }
+            default: { // 0: Bone
+                m_stops = {
+                    {"Air",         {0.00f, glm::vec3(0.0f), 0.00f}},
+                    {"Pre-bone",    {0.38f, glm::vec3(0.90f, 0.87f, 0.80f), 0.00f}},
+                    {"Bone onset",  {0.43f, glm::vec3(0.92f, 0.88f, 0.80f), 0.55f}},
+                    {"Dense bone",  {0.70f, glm::vec3(1.0f, 0.98f, 0.94f), 0.90f}},
+                    {"Densest",     {1.00f, glm::vec3(1.0f, 1.0f, 0.98f), 1.00f}},
+                };
+                break;
+            }
+        }
+        rebuildTransferFunction();
+    }
+
+    // Bakes the editable stop list into the transfer-function texture. addStop
+    // sorts, so the ramp is correct regardless of the editor's row order.
+    void rebuildTransferFunction() {
+        volume::TransferFunction tf;
+        for (const auto& e : m_stops) tf.addStop(e.s.t, e.s.color, e.s.opacity);
+        uploadTransferFunction(tf);
     }
 
     void createDescriptors() {
@@ -167,21 +260,71 @@ private:
     }
 
     void onImGui() override {
-        ImGui::Begin("Volume Illumination");
+        ImGui::Begin("CT Volume Rendering");
         if (ImGui::Combo("Dataset", &m_datasetIndex, m_datasetNames.data(),
                          static_cast<int>(m_datasetNames.size())))
             buildVolume(m_datasetIndex);
+
+        // Radiology-style VR preset picker.
+        ImGui::SeparatorText("VR preset");
+        const char* presetNames[IM_ARRAYSIZE(kPresets)];
+        for (int i = 0; i < IM_ARRAYSIZE(kPresets); ++i)
+            presetNames[i] = kPresets[i].name;
+        if (ImGui::Combo("Preset", &m_preset, presetNames,
+                         IM_ARRAYSIZE(kPresets)))
+            applyPreset(m_preset);
+
+        // Window/level - the core radiology contrast control (WL/WW). Here in
+        // normalised units [0,1]; narrowing the width increases contrast.
+        ImGui::SeparatorText("Windowing (WL / WW)");
+        ImGui::SliderFloat("Window level", &m_winLevel, 0.0f, 1.0f, "%.3f");
+        ImGui::SliderFloat("Window width", &m_winWidth, 0.02f, 1.0f, "%.3f");
         ImGui::SliderInt("Slices", &m_numSlices, 16, 768);
-        // Density window: only voxels whose density falls in [min,max] render.
-        // Raise min to drop soft tissue/skin and keep only the dense, lit core
-        // (e.g. bone); lower max to peel off the densest structures.
-        ImGui::DragFloatRange2("Density range", &m_densityMin, &m_densityMax,
-                               0.005f, 0.0f, 1.0f, "min %.2f", "max %.2f");
+
+        // Live, labelled transfer-function editor (opacity/colour curve).
+        ImGui::SeparatorText("Transfer function");
+        bool tfChanged = false;
+        int removeAt = -1;
+        for (int i = 0; i < static_cast<int>(m_stops.size()); ++i) {
+            ImGui::PushID(i);
+            EditStop& e = m_stops[i];
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%s", e.label.c_str());
+            ImGui::ColorEdit3(
+                "##col", &e.s.color.x,
+                ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+            if (ImGui::IsItemEdited()) tfChanged = true;
+            ImGui::SameLine();
+            ImGui::PushItemWidth(150.0f);
+            if (ImGui::InputText("##name", buf, sizeof(buf))) e.label = buf;
+            ImGui::PopItemWidth();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("remove")) removeAt = i;
+            ImGui::PushItemWidth(220.0f);
+            tfChanged |= ImGui::SliderFloat("density", &e.s.t, 0.0f, 1.0f, "%.3f");
+            tfChanged |=
+                ImGui::SliderFloat("opacity", &e.s.opacity, 0.0f, 1.0f, "%.2f");
+            ImGui::PopItemWidth();
+            ImGui::Spacing();
+            ImGui::PopID();
+        }
+        if (removeAt >= 0 && m_stops.size() > 1) {
+            m_stops.erase(m_stops.begin() + removeAt);
+            tfChanged = true;
+        }
+        if (ImGui::SmallButton("+ Add band")) {
+            m_stops.push_back({"New band", {0.5f, glm::vec3(1.0f), 0.5f}});
+            tfChanged = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset preset")) applyPreset(m_preset);
+        if (tfChanged) rebuildTransferFunction();
+
         ImGui::SeparatorText("Light");
         ImGui::SliderFloat("Azimuth", &m_lightAzimuth, -3.14159f, 3.14159f);
         ImGui::SliderFloat("Elevation", &m_lightElevation, -1.5f, 1.5f);
         ImGui::SliderFloat("Ambient", &m_ambient, 0.0f, 1.0f);
-        ImGui::SeparatorText("Material");
+        ImGui::SeparatorText("Material (Blinn-Phong)");
         ImGui::SliderFloat("Diffuse kd", &m_kd, 0.0f, 2.0f);
         ImGui::SliderFloat("Specular ks", &m_ks, 0.0f, 2.0f);
         ImGui::SliderFloat("Shininess", &m_shininess, 1.0f, 128.0f);
@@ -207,7 +350,11 @@ private:
         PushConstants pc{};
         pc.mvp = m_camera.projection(aspect) * m_camera.view();
         pc.texelSize = glm::vec4(m_texelSize, 0.0f);
-        pc.densityRange = glm::vec4(m_densityMin, m_densityMax, 0.0f, 0.0f);
+        // Radiology windowing: map [level-width/2, level+width/2] onto the
+        // transfer-function domain before classification.
+        float lo = m_winLevel - 0.5f * m_winWidth;
+        float hi = m_winLevel + 0.5f * m_winWidth;
+        pc.window = glm::vec4(lo, hi, 0.0f, 0.0f);
         pc.lightDir = glm::vec4(glm::normalize(lightDir), m_ambient);
         pc.viewDir = glm::vec4(viewDir, m_shininess);
         pc.params = glm::vec4(
@@ -240,12 +387,14 @@ private:
     vk::raii::DescriptorPool m_descPool{nullptr};
     vk::raii::DescriptorSets m_descSets{nullptr};
 
+    std::vector<EditStop> m_stops; // UI-editable, labelled transfer function
     glm::vec3 m_boxHalf{0.5f};
     glm::vec3 m_texelSize{1.0f / 128};
     int m_datasetIndex = 0;
+    int m_preset = 0;
     int m_numSlices = 256;
-    float m_densityMin = 0.0f;
-    float m_densityMax = 1.0f;
+    float m_winLevel = 0.5f; // radiology window level
+    float m_winWidth = 1.0f; // radiology window width
     float m_lightAzimuth = 0.8f;
     float m_lightElevation = 0.6f;
     float m_ambient = 0.25f;
