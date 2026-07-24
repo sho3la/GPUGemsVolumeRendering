@@ -37,6 +37,7 @@ public:
     static TransferFunction coolWarm();  // diverging scientific colormap
     static TransferFunction bonsai();    // CT bonsai: green foliage, brown trunk
     static TransferFunction ctSkull();   // CT head: translucent skin + grey bone
+    static TransferFunction carp();      // CT fish: translucent flesh + skeleton
 
 private:
     std::vector<Stop> m_stops;

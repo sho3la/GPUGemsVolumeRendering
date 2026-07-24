@@ -35,6 +35,7 @@
 #include <array>
 #include <cmath>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -52,6 +53,11 @@ struct EyePC {
     glm::mat4 eyeMVP;
     glm::mat4 lightMVP;
     glm::vec4 params; // x = opacityCorrection, y = blurRadius
+};
+// A transfer-function control point plus a human-readable label for the editor.
+struct EditStop {
+    std::string label;
+    volume::TransferFunction::Stop s;
 };
 constexpr vk::Format kHDR = vk::Format::eR16G16B16A16Sfloat;
 constexpr uint32_t kLightSize = 512;
@@ -71,6 +77,9 @@ private:
     }
 
     void onInit() override {
+        // The GPU Gems translucency figure sits on a black backdrop.
+        clearColor = {0.0f, 0.0f, 0.0f, 1.0f};
+
         m_arcball.attach(window());
         m_arcball.setDistance(2.4f);
         m_sliceBuffers = std::make_unique<volume::SliceGeometryBuffers>(
@@ -79,13 +88,114 @@ private:
         m_source.scanDirectory(core::dataDir());
         for (const auto& s : m_source.labels()) m_datasetNames.push_back(s.c_str());
         if (int r = m_source.firstRealIndex(); r >= 0) m_datasetIndex = r;
+        // Default to the CT carp (the translucency scan from the chapter figure).
+        for (int i = 0; i < static_cast<int>(m_datasetNames.size()); ++i) {
+            if (std::string(m_datasetNames[i]).find("Carp") != std::string::npos) {
+                m_datasetIndex = i;
+                break;
+            }
+        }
 
         m_lightBuffer = makeColorTarget(ctx(), {kLightSize, kLightSize}, kHDR);
         createEyeBuffer(swapchain().extent());
         createDescriptors();
-        uploadTransferFunction(volume::TransferFunction::fire());
+        applyTransferFunction();
         buildVolume(m_datasetIndex);
         createPipelines();
+        frameDataset(m_datasetIndex);
+    }
+
+    // The carp lies along its longest axis (Z, the scan's slice stack); orbit
+    // 90 deg around Y so we view it broadside, as in the figure.
+    void frameDataset(int index) {
+        bool elongated =
+            index >= 0 && index < static_cast<int>(m_datasetNames.size()) &&
+            std::string(m_datasetNames[index]).find("Carp") != std::string::npos;
+        m_arcball.setOrientation(elongated ? 1.5708f : 0.0f, 0.08f);
+    }
+
+    // Named default transfer function for a dataset, keyed off its label. Each
+    // real scan gets its own tissue bands (thresholds follow that scan's
+    // histogram); anything unrecognised falls back to a generic fire ramp.
+    static std::vector<EditStop> defaultStopsFor(const std::string& name) {
+        auto has = [&](const char* s) { return name.find(s) != std::string::npos; };
+
+        if (has("Carp")) {
+            const glm::vec3 flesh(0.95f, 0.83f, 0.76f), bone(1.0f, 0.96f, 0.92f);
+            return {
+                {"Air",               {0.000f, glm::vec3(0.0f), 0.00f}},
+                {"Flesh onset",       {0.045f, flesh, 0.00f}},
+                {"Thin flesh / fins", {0.110f, flesh, 0.05f}},
+                {"Muscle body",       {0.420f, flesh, 0.11f}},
+                {"Skeleton",          {0.470f, bone, 0.40f}},
+                {"Dense bone",        {0.640f, bone, 0.62f}},
+                {"Densest bone",      {1.000f, glm::vec3(1.0f, 0.98f, 0.95f), 0.72f}},
+            };
+        }
+        if (has("VisMale")) {
+            // CT body: air, a big soft-tissue band (~64-79/255), then bone.
+            const glm::vec3 skin(0.90f, 0.76f, 0.68f), bone(1.0f, 0.97f, 0.93f);
+            return {
+                {"Air",         {0.000f, glm::vec3(0.0f), 0.00f}},
+                {"Skin",        {0.120f, skin, 0.03f}},
+                {"Soft tissue", {0.250f, skin, 0.08f}},
+                {"Muscle",      {0.330f, glm::vec3(0.88f, 0.72f, 0.66f), 0.11f}},
+                {"Bone onset",  {0.400f, glm::vec3(0.95f, 0.92f, 0.88f), 0.40f}},
+                {"Dense bone",  {0.650f, bone, 0.68f}},
+                {"Densest bone",{1.000f, glm::vec3(1.0f, 0.99f, 0.96f), 0.78f}},
+            };
+        }
+        if (has("CThead") || has("skull") || has("head")) {
+            // Windowed CT head: air ~0, skin, then skull bone.
+            const glm::vec3 skin(0.85f, 0.76f, 0.70f), bone(0.95f, 0.95f, 0.97f);
+            return {
+                {"Air",         {0.000f, glm::vec3(0.0f), 0.00f}},
+                {"Skin",        {0.050f, skin, 0.03f}},
+                {"Soft tissue", {0.280f, skin * 0.95f, 0.05f}},
+                {"Bone onset",  {0.340f, glm::vec3(0.70f, 0.71f, 0.74f), 0.45f}},
+                {"Dense bone",  {0.600f, bone, 0.80f}},
+                {"Teeth / densest", {1.000f, glm::vec3(1.0f, 1.0f, 1.0f), 0.92f}},
+            };
+        }
+        if (has("bonsai")) {
+            const glm::vec3 leaf(0.05f, 0.65f, 0.08f), wood(0.55f, 0.30f, 0.05f);
+            return {
+                {"Air",           {0.000f, glm::vec3(0.0f), 0.00f}},
+                {"Foliage onset", {0.137f, leaf, 0.00f}},
+                {"Foliage",       {0.160f, leaf, 0.30f}},
+                {"Foliage dense", {0.227f, leaf, 0.35f}},
+                {"Wood",          {0.235f, wood, 0.55f}},
+                {"Trunk / dense", {1.000f, glm::vec3(0.70f, 0.42f, 0.08f), 0.85f}},
+            };
+        }
+        // Generic fallback: label the fire ramp's control points.
+        std::vector<EditStop> out;
+        auto stops = volume::TransferFunction::fire().stops();
+        const char* names[] = {"Empty", "Low", "Mid", "High", "Peak"};
+        for (size_t i = 0; i < stops.size(); ++i)
+            out.push_back({i < 5 ? names[i] : "Stop", stops[i]});
+        return out;
+    }
+
+    // Loads the current dataset's named default preset into the editable stop
+    // list, then bakes. Labels make the UI editor self-explanatory.
+    void applyTransferFunction() {
+        std::string name =
+            (m_datasetIndex >= 0 &&
+             m_datasetIndex < static_cast<int>(m_datasetNames.size()))
+                ? m_datasetNames[m_datasetIndex]
+                : std::string();
+        m_stops = defaultStopsFor(name);
+        rebuildTransferFunction();
+    }
+
+    // Bakes the current (UI-editable) stop list into the transfer-function
+    // texture. addStop sorts, so the baked ramp is correct regardless of the
+    // order the stops appear in the editor.
+    void rebuildTransferFunction() {
+        volume::TransferFunction tf;
+        for (const auto& e : m_stops) tf.addStop(e.s.t, e.s.color, e.s.opacity);
+        uploadTransferFunction(tf);
     }
 
     void onResize(uint32_t, uint32_t) override {
@@ -177,6 +287,19 @@ private:
         writeSampler(*m_eyeSet, 1, m_tfTex.view(), m_tfTex.sampler());
     }
 
+    // Mirrors an R8 volume along Y (rows), leaving X and Z untouched.
+    static std::vector<uint8_t> flipY(std::vector<uint8_t> src, int nx, int ny,
+                                      int nz) {
+        std::vector<uint8_t> dst(src.size());
+        const size_t slice = static_cast<size_t>(nx) * ny;
+        for (int z = 0; z < nz; ++z)
+            for (int y = 0; y < ny; ++y) {
+                const uint8_t* s = &src[z * slice + static_cast<size_t>(ny - 1 - y) * nx];
+                std::copy(s, s + nx, &dst[z * slice + static_cast<size_t>(y) * nx]);
+            }
+        return dst;
+    }
+
     void buildVolume(int index) {
         ctx().waitIdle();
         volume::VolumeData vol = m_source.create(index, 128);
@@ -189,7 +312,8 @@ private:
         desc.format = vk::Format::eR8Unorm;
         desc.type = vk::ImageType::e3D;
         m_volumeTex = gfx::Texture(ctx(), desc);
-        auto bytes = vol.toR8();
+        // Raw scans store rows top-to-bottom, so flip in Y to stand upright.
+        auto bytes = flipY(vol.toR8(), vol.nx(), vol.ny(), vol.nz());
         m_volumeTex.uploadFromData(ctx(), bytes.data(), bytes.size());
 
         writeSampler(*m_volSet, 0, m_volumeTex.view(), m_volumeTex.sampler());
@@ -398,9 +522,12 @@ private:
     void onImGui() override {
         ImGui::Begin("Translucency");
         if (ImGui::Combo("Dataset", &m_datasetIndex, m_datasetNames.data(),
-                         static_cast<int>(m_datasetNames.size())))
+                         static_cast<int>(m_datasetNames.size()))) {
             buildVolume(m_datasetIndex);
-        ImGui::SliderInt("Slices", &m_numSlices, 16, 256);
+            applyTransferFunction();
+            frameDataset(m_datasetIndex);
+        }
+        ImGui::SliderInt("Slices", &m_numSlices, 16, 1024);
         ImGui::SeparatorText("Light");
         ImGui::SliderFloat("Azimuth", &m_lightAzimuth, -3.14159f, 3.14159f);
         ImGui::SliderFloat("Elevation", &m_lightElevation, -1.5f, 1.5f);
@@ -409,6 +536,50 @@ private:
         ImGui::ColorEdit3("Absorption (per channel)", &m_absorption.x);
         ImGui::SliderFloat("Blur radius (phi)", &m_blurRadius, 0.0f, 0.02f,
                            "%.4f");
+
+        // Live transfer-function editor. Each control point is a named tissue
+        // band (Air / Flesh / Skeleton / ...) with its density position, colour
+        // and opacity exposed, so the classification can be tuned in situ.
+        ImGui::SeparatorText("Transfer function");
+        bool tfChanged = false;
+        int removeAt = -1;
+        for (int i = 0; i < static_cast<int>(m_stops.size()); ++i) {
+            ImGui::PushID(i);
+            EditStop& e = m_stops[i];
+            // Editable band name + its colour swatch, with a remove button.
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%s", e.label.c_str());
+            ImGui::ColorEdit3(
+                "##col", &e.s.color.x,
+                ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+            if (ImGui::IsItemEdited()) tfChanged = true;
+            ImGui::SameLine();
+            ImGui::PushItemWidth(150.0f);
+            if (ImGui::InputText("##name", buf, sizeof(buf))) e.label = buf;
+            ImGui::PopItemWidth();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("remove")) removeAt = i;
+
+            ImGui::PushItemWidth(220.0f);
+            tfChanged |= ImGui::SliderFloat("density", &e.s.t, 0.0f, 1.0f, "%.3f");
+            tfChanged |=
+                ImGui::SliderFloat("opacity", &e.s.opacity, 0.0f, 1.0f, "%.2f");
+            ImGui::PopItemWidth();
+            ImGui::Spacing();
+            ImGui::PopID();
+        }
+        if (removeAt >= 0 && m_stops.size() > 1) {
+            m_stops.erase(m_stops.begin() + removeAt);
+            tfChanged = true;
+        }
+        if (ImGui::SmallButton("+ Add band")) {
+            m_stops.push_back({"New band", {0.5f, glm::vec3(1.0f), 0.5f}});
+            tfChanged = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset preset")) applyTransferFunction();
+        if (tfChanged) rebuildTransferFunction();
+
         ImGui::Text("Slices drawn: %d", m_lastSliceCount);
         ImGui::Text("%.1f FPS", ImGui::GetIO().Framerate);
         ImGui::End();
@@ -447,15 +618,18 @@ private:
     vk::raii::DescriptorSet m_eyeSet{nullptr};
     vk::raii::DescriptorSet m_compSet{nullptr};
 
+    std::vector<EditStop> m_stops; // UI-editable, labelled transfer function
     glm::vec3 m_boxHalf{0.5f};
     int m_datasetIndex = 0;
-    int m_numSlices = 128;
+    int m_numSlices = 256;
     int m_lastSliceCount = 0;
     float m_lightAzimuth = 1.0f;
     float m_lightElevation = 0.7f;
-    glm::vec3 m_lightColor{1.0f, 0.98f, 0.92f};
-    glm::vec3 m_absorption{0.4f, 0.7f, 0.9f}; // red penetrates deepest
-    float m_blurRadius = 0.004f;
+    glm::vec3 m_lightColor{1.0f, 1.0f, 1.0f};
+    // Strongly wavelength-dependent so deep flesh glows red (red penetrates,
+    // green/blue are absorbed) - the translucency look of the chapter figure.
+    glm::vec3 m_absorption{0.22f, 0.85f, 0.96f};
+    float m_blurRadius = 0.006f;
 };
 
 int main() {

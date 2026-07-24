@@ -113,4 +113,24 @@ TransferFunction TransferFunction::ctSkull() {
     return tf;
 }
 
+// Classifies the CT carp (GPU Gems §39.5.1 translucency figure): a thick,
+// very translucent flesh body over a denser, more opaque skeleton. Colours are
+// kept pale/warm - the deep-red glow of the figure comes from App 05's
+// per-channel absorption reddening the light as it passes through the flesh, not
+// from the transfer function itself. Thresholds follow the scan histogram (air
+// ~<0.035, flesh spike near 0.38, bone above ~0.42).
+TransferFunction TransferFunction::carp() {
+    TransferFunction tf;
+    const glm::vec3 flesh(0.95f, 0.83f, 0.76f);
+    const glm::vec3 bone(1.0f, 0.96f, 0.92f);
+    tf.addStop(0.000f, glm::vec3(0.0f), 0.00f);           // air
+    tf.addStop(0.045f, flesh, 0.00f);                     // flesh onset
+    tf.addStop(0.110f, flesh, 0.05f);                     // thin flesh / fins
+    tf.addStop(0.420f, flesh, 0.11f);                     // muscle body (translucent)
+    tf.addStop(0.470f, bone, 0.40f);                      // skeleton onset
+    tf.addStop(0.640f, bone, 0.62f);                      // dense bone
+    tf.addStop(1.000f, glm::vec3(1.0f, 0.98f, 0.95f), 0.72f);
+    return tf;
+}
+
 } // namespace vve::volume

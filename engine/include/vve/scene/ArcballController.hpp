@@ -17,6 +17,13 @@ public:
 
     void setDistance(float d) { m_distance = d; update(); }
     void setRadius(float r) { m_distance = r; update(); }
+    // Sets the initial orbit angles (radians): yaw around Y, pitch above the XZ
+    // plane. Lets an app frame an elongated volume from a chosen side.
+    void setOrientation(float yaw, float pitch) {
+        m_yaw = yaw;
+        m_pitch = pitch;
+        update();
+    }
 
 private:
     void update();

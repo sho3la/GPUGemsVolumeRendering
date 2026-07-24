@@ -91,10 +91,13 @@ every app's dataset combo automatically):
 |------|--------|-------|
 | `bonsai_256x256x256_uint8.raw` | CT bonsai, via [lquatrin/volume_rendering_data](https://github.com/lquatrin/volume_rendering_data) (originally the [Open SciVis](https://klacansky.com/open-scivis-datasets/) *bonsai*) | App 04 flips it upright and classifies green foliage / brown trunk |
 | `CThead_256x256x113_uint16.raw` | UNC CT head, via [joshcodd/volume-rendering](https://github.com/joshcodd/volume-rendering) | Byte-swapped to little-endian and window/level-adjusted so air maps to 0; classified as translucent skin over a grey skull |
+| `Carp_256x256x512_uint16.raw` | CT carp, from Stefan Roettger's [volume library](http://volume.open-terrain.org/) (`Carp.pvm`) | Decoded from the DDS-compressed PVM and byte-swapped to little-endian; App 05 renders it broadside as translucent red flesh over a skeleton |
 
 App 04 auto-picks a matching transfer function per dataset (bonsai → foliage,
 CThead → skin+bone) and defaults to the bonsai; use the **Transfer fn** combo to
-override.
+override. App 05 defaults to the carp and exposes a live **Transfer function**
+editor — every control point (density, colour, opacity) is editable in the UI,
+with add/remove/reset.
 
 ## Notes & limitations
 
